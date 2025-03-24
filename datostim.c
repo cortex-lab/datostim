@@ -71,6 +71,9 @@
 typedef struct DScreen DScreen;
 typedef struct DLayer DLayer;
 typedef struct DStim DStim;
+typedef struct DStimSquareVertex DStimSquareVertex;
+typedef struct DStimVertex DStimVertex;
+typedef struct DStimPush DStimPush;
 
 
 
@@ -145,6 +148,7 @@ struct DLayer
     vec2 tex_offset;
     vec2 tex_size;
     uvec2 img_size;
+
     cvec4 mask;
     cvec4 min_color;
     cvec4 max_color;
@@ -219,16 +223,14 @@ struct DStimVertex
 
 
 
-struct DStimUniform
+struct DStimPush
 {
-    mat4 view;
-    mat4 model;
     mat4 projection;
-    vec4 maxColor;
-    vec4 minColor;
-    vec2 texOffset; /* offset the texture, degrees */
-    vec2 texSize;   /* size of the texture, degrees */
-    float texAngle; /* rotate the texture, degrees */
+    vec4 min_color;
+    vec4 max_color;
+    vec2 tex_offset;
+    vec2 tex_size;
+    float tex_angle;
 };
 
 
@@ -335,13 +337,11 @@ static DvzId create_square_pipeline(DvzBatch* batch)
     dvz_set_polygon(batch, graphics_id, DVZ_POLYGON_MODE_FILL);
 
     // Vertex binding.
-    dvz_set_vertex(
-        batch, graphics_id, 0, sizeof(struct DStimSquareVertex), DVZ_VERTEX_INPUT_RATE_VERTEX);
+    dvz_set_vertex(batch, graphics_id, 0, sizeof(DStimSquareVertex), DVZ_VERTEX_INPUT_RATE_VERTEX);
 
     // Vertex attrs.
     dvz_set_attr(
-        batch, graphics_id, 0, 0, DVZ_FORMAT_R32G32B32_SFLOAT,
-        offsetof(struct DStimSquareVertex, pos));
+        batch, graphics_id, 0, 0, DVZ_FORMAT_R32G32B32_SFLOAT, offsetof(DStimSquareVertex, pos));
 
     // Slots.
     dvz_set_slot(batch, graphics_id, 0, DVZ_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
@@ -370,21 +370,24 @@ static DvzId create_sphere_pipeline(DvzBatch* batch)
     dvz_set_polygon(batch, graphics_id, DVZ_POLYGON_MODE_FILL);
 
     // Vertex binding.
-    dvz_set_vertex(
-        batch, graphics_id, 0, sizeof(struct DStimVertex), DVZ_VERTEX_INPUT_RATE_VERTEX);
+    dvz_set_vertex(batch, graphics_id, 0, sizeof(DStimVertex), DVZ_VERTEX_INPUT_RATE_VERTEX);
 
     // Vertex attrs.
     dvz_set_attr(
         batch, graphics_id, 0, 0, //
-        DVZ_FORMAT_R32G32B32_SFLOAT, offsetof(struct DStimVertex, vertexPos));
+        DVZ_FORMAT_R32G32B32_SFLOAT, offsetof(DStimVertex, vertexPos));
 
     dvz_set_attr(
         batch, graphics_id, 0, 1, //
-        DVZ_FORMAT_R32G32_SFLOAT, offsetof(struct DStimVertex, vertexUV));
+        DVZ_FORMAT_R32G32_SFLOAT, offsetof(DStimVertex, vertexUV));
 
     // Slots.
-    dvz_set_slot(batch, graphics_id, 0, DVZ_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-    dvz_set_slot(batch, graphics_id, 1, DVZ_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    // dvz_set_slot(batch, graphics_id, 0, DVZ_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    dvz_set_slot(batch, graphics_id, 0, DVZ_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+
+    // Push constants.
+    dvz_set_push(
+        batch, graphics_id, DVZ_SHADER_VERTEX | DVZ_SHADER_FRAGMENT, 0, sizeof(DStimPush));
 
     return graphics_id;
 }
@@ -402,7 +405,7 @@ static void upload_rectangle(DvzBatch* batch, DvzId square_vertex_id, vec2 offse
     float w = shape[0];
     float h = shape[1];
 
-    struct DStimSquareVertex data[] = {
+    DStimSquareVertex data[] = {
 
         // lower triangle
         {{x, y, 0}},
@@ -452,12 +455,14 @@ static void create_background(DStim* stim)
 
     // Create the vertex buffer dat for the background.
     DvzRequest req = dvz_create_dat(
-        batch, DVZ_BUFFER_TYPE_VERTEX, SQUARE_VERTEX_COUNT * sizeof(struct DStimSquareVertex), 0);
+        batch, DVZ_BUFFER_TYPE_VERTEX, SQUARE_VERTEX_COUNT * sizeof(DStimSquareVertex),
+        DVZ_DAT_FLAGS_PERSISTENT_STAGING);
     stim->background_vertex_id = req.id;
     req = dvz_bind_vertex(batch, stim->background_graphics_id, 0, stim->background_vertex_id, 0);
 
     // UBO.
-    req = dvz_create_dat(batch, DVZ_BUFFER_TYPE_UNIFORM, sizeof(vec4), 0);
+    req = dvz_create_dat(
+        batch, DVZ_BUFFER_TYPE_UNIFORM, sizeof(vec4), DVZ_DAT_FLAGS_PERSISTENT_STAGING);
     stim->background_params_id = req.id;
     req = dvz_bind_dat(batch, stim->background_graphics_id, 0, stim->background_params_id, 0);
 }
@@ -476,12 +481,14 @@ static void create_square(DStim* stim)
 
     // Create the vertex buffer dat for the square.
     DvzRequest req = dvz_create_dat(
-        batch, DVZ_BUFFER_TYPE_VERTEX, SQUARE_VERTEX_COUNT * sizeof(struct DStimSquareVertex), 0);
+        batch, DVZ_BUFFER_TYPE_VERTEX, SQUARE_VERTEX_COUNT * sizeof(DStimSquareVertex),
+        DVZ_DAT_FLAGS_PERSISTENT_STAGING);
     stim->square_vertex_id = req.id;
     req = dvz_bind_vertex(batch, stim->square_graphics_id, 0, stim->square_vertex_id, 0);
 
     // UBO.
-    req = dvz_create_dat(batch, DVZ_BUFFER_TYPE_UNIFORM, sizeof(vec4), 0);
+    req = dvz_create_dat(
+        batch, DVZ_BUFFER_TYPE_UNIFORM, sizeof(vec4), DVZ_DAT_FLAGS_PERSISTENT_STAGING);
     stim->square_params_id = req.id;
     req = dvz_bind_dat(batch, stim->square_graphics_id, 0, stim->square_params_id, 0);
 }
@@ -497,7 +504,7 @@ static void create_sphere_vertex_buffer(DStim* stim, uint32_t sphere_vertex_coun
 
     // Create the vertex buffer dat for the sphere.
     DvzRequest req = dvz_create_dat(
-        batch, DVZ_BUFFER_TYPE_VERTEX, sphere_vertex_count * sizeof(struct DStimVertex), 0);
+        batch, DVZ_BUFFER_TYPE_VERTEX, sphere_vertex_count * sizeof(DStimVertex), 0);
     stim->sphere_vertex_id = req.id;
 
     req = dvz_bind_vertex(batch, stim->sphere_graphics_id, 0, stim->sphere_vertex_id, 0);
@@ -526,9 +533,9 @@ static void load_sphere_vertex_data(DStim* stim, uint32_t sphere_vertex_count)
 {
     // Load vertex data from disk.
     DvzSize buffer_size = 0;
-    struct DStimVertex* vertices = read_file("data/vertex", &buffer_size);
+    DStimVertex* vertices = read_file("data/vertex", &buffer_size);
     ASSERT(buffer_size > 0);
-    ASSERT(buffer_size == sphere_vertex_count * sizeof(struct DStimVertex));
+    ASSERT(buffer_size == sphere_vertex_count * sizeof(DStimVertex));
     dstim_vertices(stim, sphere_vertex_count, vertices);
     FREE(vertices);
 }
@@ -680,7 +687,7 @@ void dstim_vertices(DStim* stim, uint32_t vertex_count, DStimVertex* vertices)
     ASSERT(vertex_count > 0);
     ANN(vertices);
 
-    DvzSize buffer_size = vertex_count * sizeof(struct DStimVertex);
+    DvzSize buffer_size = vertex_count * sizeof(DStimVertex);
     ASSERT(buffer_size > 0);
     ASSERT(stim->sphere_vertex_id != DVZ_ID_NONE);
     DvzRequest req =
@@ -748,10 +755,6 @@ double dstim_update(DStim* stim)
     DvzId canvas_id = stim->canvas_id;
     ASSERT(canvas_id != DVZ_ID_NONE);
 
-    // TODO
-    // send all updates since that last call to this function to the GPU,
-    // and returns the update timestamp when the update has finished
-
     // HACK: if model_has_changed or view_has_changed:
     //     recreate pipeline with spec constant for view
 
@@ -771,6 +774,7 @@ double dstim_update(DStim* stim)
 
     DScreen* screen = NULL;
     DLayer* layer = NULL;
+    DStimPush push = {0};
 
     // Loop over all screens.
     for (uint32_t screen_idx = 0; screen_idx < stim->screen_count; screen_idx++)
@@ -784,6 +788,8 @@ double dstim_update(DStim* stim)
             (vec2){screen->offset[0], screen->offset[1]}, //
             (vec2){screen->size[0], screen->size[1]});
 
+        // Push constants.
+        glm_mat4_copy(screen->projection, push.projection);
 
         // Loop over all layers.
         for (uint32_t layer_idx = 0; layer_idx < stim->layer_count; layer_idx++)
@@ -791,9 +797,35 @@ double dstim_update(DStim* stim)
             layer = &stim->layers[layer_idx];
             ANN(layer);
 
-            // TODO: update shader with push constant
-            //  layer's projection, tex angle, offset, size, min/max color
-            // TODO: create push struct and record push
+            // Do not draw invisible layers.
+            if (!layer->is_visible)
+                continue;
+
+            // Push constants struct.
+            push.min_color[0] = layer->min_color[0] / 255.0;
+            push.min_color[1] = layer->min_color[1] / 255.0;
+            push.min_color[2] = layer->min_color[2] / 255.0;
+            push.min_color[3] = layer->min_color[3] / 255.0;
+
+            push.max_color[0] = layer->max_color[0] / 255.0;
+            push.max_color[1] = layer->max_color[1] / 255.0;
+            push.max_color[2] = layer->max_color[2] / 255.0;
+            push.max_color[3] = layer->max_color[3] / 255.0;
+
+            push.tex_offset[0] = layer->tex_offset[0];
+            push.tex_offset[1] = layer->tex_offset[1];
+
+            push.tex_size[0] = layer->tex_size[0];
+            push.tex_size[1] = layer->tex_size[1];
+
+            push.tex_angle = layer->tex_angle;
+
+            // TODO: support color mask, will require Datoviz Rendering Protocol updates.
+
+            // Send the push constant to the command buffer.
+            dvz_record_push(
+                batch, canvas_id, stim->sphere_graphics_id,
+                DVZ_SHADER_VERTEX | DVZ_SHADER_FRAGMENT, 0, sizeof(DStimPush), &push);
 
             // Sphere.
             dvz_record_draw_indexed(
@@ -809,8 +841,10 @@ double dstim_update(DStim* stim)
 
 
     // Update the canvas.
-    // TODO: submit the batch and:
-    // dvz_app_frame(stim->app);
+    dvz_app_submit(stim->app);
+
+    // TODO: returns the update timestamp when the update has finished
+    return 0;
 }
 
 
@@ -1019,6 +1053,10 @@ int main(int argc, char** argv)
 {
     DStim* stim = dstim_init(DSTIM_DEFAULT_WIDTH, DSTIM_DEFAULT_HEIGHT);
 
+    // Important: run at least once.
+    dstim_update(stim);
+
+    // DEBUG
     dvz_app_run(stim->app, 0);
 
     dstim_cleanup(stim);
