@@ -395,15 +395,16 @@ static DvzId create_sphere_pipeline(DvzBatch* batch)
 
 
 // In normalized device coordinates (whole window = [-1..+1]).
-static void upload_rectangle(DvzBatch* batch, DvzId square_vertex_id, vec2 offset, vec2 shape)
+static void upload_rectangle(DvzBatch* batch, DvzId vertex_id, vec2 offset, vec2 shape)
 {
     ANN(batch);
-    ASSERT(square_vertex_id != DVZ_ID_NONE);
+    ASSERT(vertex_id != DVZ_ID_NONE);
 
     float x = offset[0];
     float y = offset[1];
     float w = shape[0];
     float h = shape[1];
+    // log_info("pos: %f %f %f %f", x, y, w, h);
 
     DStimSquareVertex data[] = {
 
@@ -419,22 +420,23 @@ static void upload_rectangle(DvzBatch* batch, DvzId square_vertex_id, vec2 offse
 
     };
 
-    DvzRequest req = dvz_upload_dat(batch, square_vertex_id, 0, sizeof(data), data, 0);
+    DvzRequest req = dvz_upload_dat(batch, vertex_id, 0, sizeof(data), data, 0);
 }
 
 
 
 static void rectangle_color(
-    DvzBatch* batch, DvzId square_params_id, uint8_t red, uint8_t green, uint8_t blue,
-    uint8_t alpha)
+    DvzBatch* batch, DvzId params_id, uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha)
 {
     ANN(batch);
-    ASSERT(square_params_id != DVZ_ID_NONE);
+    ASSERT(params_id != DVZ_ID_NONE);
 
     // NOTE: from uint8_t to float [0.0, 1.0] for GPU uniform
     vec4 color = {red / 255.0, green / 255.0, blue / 255.0, alpha / 255.0};
 
-    DvzRequest req = dvz_upload_dat(batch, square_params_id, 0, sizeof(vec4), &color, 0);
+    // log_info("color: %f %f %f %f", color[0], color[1], color[2], color[3]);
+
+    DvzRequest req = dvz_upload_dat(batch, params_id, 0, sizeof(vec4), &color, 0);
 }
 
 
@@ -716,13 +718,13 @@ void dstim_square_pos(DStim* stim, uint32_t x, uint32_t y, uint32_t w, uint32_t 
     ANN(stim);
 
     // from pixels to NDC
-    x = -1 + 2.0 * x / stim->width;
-    y = -1 + 2.0 * y / stim->height;
+    float xf = -1 + 2.0 * (float)x / (float)stim->width;
+    float yf = -1 + 2.0 * (float)y / (float)stim->height;
 
-    w = 2.0 * w / stim->width;
-    h = 2.0 * h / stim->width;
+    float wf = 2.0 * (float)w / (float)stim->width;
+    float hf = 2.0 * (float)h / (float)stim->height;
 
-    upload_rectangle(stim->batch, stim->square_vertex_id, (vec2){x, y}, (vec2){w, h});
+    upload_rectangle(stim->batch, stim->square_vertex_id, (vec2){xf, yf}, (vec2){wf, hf});
 }
 
 
