@@ -11,7 +11,10 @@ layout(location = 0) out vec4 color;
 layout(push_constant) uniform Push
 {
     // WARNING: the variables should be sorted by decreasing size to avoid alignment issues.
+    mat4 model;
+    mat4 view;
     mat4 projection;
+
     vec4 min_color;
     vec4 max_color;
     vec2 tex_offset; /* offset the texture, degrees */
@@ -42,5 +45,10 @@ void main()
     color = color * (params.max_color - params.min_color) + params.min_color;
 
     // DEBUG
-    // color = vec4(uv, 1, 1);
+    // vec4 max_color = vec4(1, 1, 0, 1);
+    // vec4 min_color = vec4(1, 0, 1, 1);
+    // color = color * (max_color - min_color) + min_color;
+
+    // DEBUG
+    // color = vec4(UV, 1, 1);
 }

@@ -76,7 +76,7 @@ typedef struct DStim DStim;
 typedef struct DStimSquareVertex DStimSquareVertex;
 typedef struct DStimVertex DStimVertex;
 typedef struct DStimPush DStimPush;
-typedef struct DStimParams DStimParams;
+// typedef struct DStimParams DStimParams;
 
 
 
@@ -227,22 +227,20 @@ struct DStimVertex
 
 
 
+// NOTE: maxPushConstantsSize needs to be >= 256 on the GPU
 struct DStimPush
-{
-    mat4 projection;
-    vec4 min_color;
-    vec4 max_color;
-    vec2 tex_offset;
-    vec2 tex_size;
-    float tex_angle;
-};
-
-
-
-struct DStimParams
 {
     mat4 model;
     mat4 view;
+    mat4 projection;
+
+    vec4 min_color;
+    vec4 max_color;
+
+    vec2 tex_offset;
+    vec2 tex_size;
+
+    float tex_angle;
 };
 
 
@@ -395,7 +393,7 @@ static DvzId create_sphere_pipeline(DvzBatch* batch)
 
     // Slots.
     dvz_set_slot(batch, graphics_id, 0, DVZ_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-    dvz_set_slot(batch, graphics_id, 1, DVZ_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    // dvz_set_slot(batch, graphics_id, 1, DVZ_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
     // Push constants.
     dvz_set_push(
@@ -505,22 +503,6 @@ static void create_square(DStim* stim)
         batch, DVZ_BUFFER_TYPE_UNIFORM, sizeof(vec4), DVZ_DAT_FLAGS_PERSISTENT_STAGING);
     stim->square_params_id = req.id;
     req = dvz_bind_dat(batch, stim->square_graphics_id, 0, stim->square_params_id, 0);
-}
-
-
-
-static void create_sphere_params(DStim* stim)
-{
-    ANN(stim);
-
-    DvzBatch* batch = stim->batch;
-    ANN(batch);
-
-    // UBO.
-    DvzRequest req = dvz_create_dat(
-        batch, DVZ_BUFFER_TYPE_UNIFORM, sizeof(DStimParams), DVZ_DAT_FLAGS_PERSISTENT_STAGING);
-    stim->sphere_ubo_id = req.id;
-    req = dvz_bind_dat(batch, stim->sphere_graphics_id, 1, stim->sphere_ubo_id, 0);
 }
 
 
@@ -671,8 +653,6 @@ DStim* dstim_init(uint32_t width, uint32_t height)
     create_sphere_index_buffer(stim, stim->sphere_index_count);
     load_sphere_index_data(stim, stim->sphere_index_count);
 
-    create_sphere_params(stim);
-
 
     // Canvas.
     // --------------------------------------------------------------------------------------------
@@ -752,8 +732,6 @@ void dstim_model(DStim* stim, mat4 model)
 {
     ANN(stim);
     glm_mat4_copy(model, stim->model);
-
-    // TODO: model_has_changed
 }
 
 
@@ -779,7 +757,7 @@ double dstim_update(DStim* stim)
     dvz_record_begin(batch, canvas_id);
 
     // Viewport.
-    dvz_record_viewport(batch, canvas_id, DVZ_DEFAULT_VIEWPORT, DVZ_DEFAULT_VIEWPORT);
+    dvz_record_viewport(batch, canvas_id, (vec2){0, 0}, (vec2){stim->width, stim->height});
 
     // Background.
     dvz_record_draw(batch, canvas_id, stim->background_graphics_id, 0, SQUARE_VERTEX_COUNT, 0, 1);
@@ -788,6 +766,9 @@ double dstim_update(DStim* stim)
     DScreen* screen = NULL;
     DLayer* layer = NULL;
     DStimPush push = {0};
+
+    // Global model matrix.
+    glm_mat4_copy(stim->model, push.model);
 
     // Loop over all screens.
     for (uint32_t screen_idx = 0; screen_idx < stim->screen_count; screen_idx++)
@@ -802,6 +783,8 @@ double dstim_update(DStim* stim)
             (vec2){screen->size[0], screen->size[1]});
 
         // Push constants.
+
+        // Per-screen projection matrix.
         glm_mat4_copy(screen->projection, push.projection);
 
         // Loop over all layers.
@@ -814,7 +797,10 @@ double dstim_update(DStim* stim)
             if (layer->is_hidden)
                 continue;
 
-            // Push constants struct.
+            // Per-layer view matrix.
+            glm_mat4_copy(layer->view, push.view);
+
+            // Push constants parameters.
             push.min_color[0] = layer->min_color[0] / 255.0;
             push.min_color[1] = layer->min_color[1] / 255.0;
             push.min_color[2] = layer->min_color[2] / 255.0;
@@ -995,17 +981,6 @@ void dstim_layer_view(DStim* stim, uint32_t layer_idx, mat4 view)
 
     GET_LAYER
     glm_mat4_copy(view, layer->view);
-
-
-    DStimParams params = {0};
-    glm_mat4_copy(stim->model, params.model);
-    glm_mat4_copy(layer->view, params.view);
-    dvz_upload_dat(stim->batch, stim->sphere_ubo_id, 0, sizeof(DStimParams), &params, 0);
-
-    /*
-    warning: only the first layer's view can be set for now
-    HACK: view_has_changed
-    */
 }
 
 
@@ -1093,6 +1068,7 @@ int main(int argc, char** argv)
     dstim_model(stim, *model);
     FREE(model);
 
+
     // Screens.
     float w3 = (float)DSTIM_DEFAULT_WIDTH / 3.0;
     float h = (float)DSTIM_DEFAULT_HEIGHT;
@@ -1101,18 +1077,12 @@ int main(int argc, char** argv)
     dstim_screen(stim, 1, 1 * w3, 0, w3, h);
     dstim_screen(stim, 2, 2 * w3, 0, w3, h);
 
-    mat4* proj1 = read_file("data/screen1", NULL);
-    dstim_projection(stim, 0, *proj1);
-    FREE(proj1);
-
-    mat4* proj2 = read_file("data/screen2", NULL);
-    dstim_projection(stim, 1, *proj2);
-    FREE(proj2);
-
-    mat4* proj3 = read_file("data/screen3", NULL);
-    dstim_projection(stim, 2, *proj3);
-    FREE(proj3);
-
+    mat4* proj = read_file("data/projection", NULL);
+    glm_mat4_print(*proj, stdout);
+    dstim_projection(stim, 0, *proj);
+    dstim_projection(stim, 1, *proj);
+    dstim_projection(stim, 2, *proj);
+    FREE(proj);
 
 
     // Layer texture.
@@ -1129,7 +1099,7 @@ int main(int argc, char** argv)
     dstim_layer_angle(stim, 0, 0);
     dstim_layer_offset(stim, 0, 0, 0);
     dstim_layer_size(stim, 0, 30, 30);
-    dstim_layer_min_color(stim, 0, 0, 0, 0, 0);
+    dstim_layer_min_color(stim, 0, 0, 0, 0, 128);
     dstim_layer_max_color(stim, 0, 255, 255, 255, 255);
 
     mat4* view = read_file("data/view", NULL);

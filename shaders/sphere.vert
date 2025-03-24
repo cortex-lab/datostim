@@ -24,7 +24,10 @@ layout(location = 0) out vec2 UV;
 layout(push_constant) uniform Push
 {
     // WARNING: the variables should be sorted by decreasing size to avoid alignment issues.
+    mat4 model;
+    mat4 view;
     mat4 projection;
+
     vec4 min_color;
     vec4 max_color;
     vec2 tex_offset; /* offset the texture, degrees */
@@ -42,26 +45,6 @@ params;
 layout(binding = 0) uniform sampler2D myTextureSampler;
 
 
-// Uniform struct shared by both shaders (a current limitation of Datoviz, that's why we put
-// fragment shader stuff here).
-layout(std140, binding = 1) uniform Uniform
-{
-    // WARNING: the variables should be sorted by decreasing size to avoid alignment issues.
-    mat4 view;
-    mat4 model;
-    // mat4 projection;
-    // vec4 maxColor;
-    // vec4 minColor;
-    // vec2 tex_offset; /* offset the texture, degrees */
-    // vec2 tex_size;   /* size of the texture, degrees */
-    // float tex_angle; /* rotate the texture, degrees */
-
-    // For fragment shader.
-    /* float viewAngle;*/ /* rotation of view, degrees */
-    /* vec2 pos;*/        /* position of layer [azimuth, altitude], degrees */
-}
-ubo;
-
 
 void main()
 {
@@ -74,7 +57,8 @@ void main()
     vec2 tex_offset = params.tex_offset;
     vec2 tex_size = params.tex_size;
 
-    gl_Position = params.projection * ubo.view * ubo.model * vec4(vertexPos.xyz, 1.0f);
+    gl_Position =
+        params.projection * mat4(params.view) * mat4(params.model) * vec4(vertexPos.xyz, 1.0f);
 
     // Vulkan conversion.
     gl_Position.y *= -1.0;
