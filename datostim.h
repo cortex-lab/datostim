@@ -79,10 +79,25 @@ typedef enum
 typedef enum
 {
     DSTIM_BLENDING_NONE,
-    DSTIM_BLENDING_DST_DST,
-    DSTIM_BLENDING_SRC_SRC,
-    DSTIM_BLENDING_ONE_MINUS_SRC_ONE_MINUS_SRC,
+    DSTIM_BLENDING_DST,
+    DSTIM_BLENDING_SRC,
+    DSTIM_BLENDING_ONE_MINUS_SRC,
 } DStimBlending;
+
+/*
+case {'none' ''}
+    glBlendFunc(GL.ONE, GL.ZERO);
+
+case {'dst' 'destination'}
+    glBlendFunc(GL.DST_ALPHA, GL.ONE_MINUS_DST_ALPHA);
+
+case {'src' 'source'}
+    glBlendFunc(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA);
+
+case {'1-src' '1-source'}
+    glBlendFunc(GL.ONE_MINUS_SRC_ALPHA, GL.SRC_ALPHA);
+
+*/
 
 
 
