@@ -1077,12 +1077,18 @@ int main(int argc, char** argv)
     dstim_screen(stim, 1, 1 * w3, 0, w3, h);
     dstim_screen(stim, 2, 2 * w3, 0, w3, h);
 
-    mat4* proj = read_file("data/projection", NULL);
-    glm_mat4_print(*proj, stdout);
-    dstim_projection(stim, 0, *proj);
-    dstim_projection(stim, 1, *proj);
-    dstim_projection(stim, 2, *proj);
-    FREE(proj);
+    mat4* proj1 = read_file("data/screen1", NULL);
+    mat4* proj2 = read_file("data/screen2", NULL);
+    mat4* proj3 = read_file("data/screen3", NULL);
+    glm_mat4_print(*proj1, stdout);
+    glm_mat4_print(*proj2, stdout);
+    glm_mat4_print(*proj3, stdout);
+    dstim_projection(stim, 0, *proj1);
+    dstim_projection(stim, 1, *proj2);
+    dstim_projection(stim, 2, *proj3);
+    FREE(proj1);
+    FREE(proj2);
+    FREE(proj3);
 
 
     // Layer texture.
