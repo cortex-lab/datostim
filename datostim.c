@@ -64,6 +64,9 @@
     stim->layer_count = MAX(stim->layer_count, layer_idx + 1);                                    \
     DLayer* layer = &stim->layers[layer_idx];
 
+#define TOUCH_LAYER         layer->is_dirty = true;
+#define TOUCH_LAYER_TEXTURE layer->is_texture_dirty = true;
+
 
 
 /*************************************************************************************************/
@@ -150,20 +153,30 @@ struct DLayer
 
     vec2 tex_offset;
     vec2 tex_size;
-    uvec2 img_size;
 
-    cvec4 mask;
+    int mask;
     cvec4 min_color;
     cvec4 max_color;
 
     float tex_angle;
+
+    // texture width and height
+    uint32_t tex_width;
+    uint32_t tex_height;
+
+    // Texture data.
+    DvzSize tex_nbytes;
     uint8_t* rgba;
 
+    DvzFormat format;
     DStimInterpolation interpolation;
     DStimBlending blending;
 
     bool is_periodic;
-    bool is_hidden; // false by default
+    bool is_visible;       // false by default
+    bool is_blank;         // need to prepare the pipeline
+    bool is_dirty;         // need to update the layer's parameters with push constant
+    bool is_texture_dirty; // need to upload the texture data again
 };
 
 
@@ -187,14 +200,16 @@ struct DStim
     DvzId square_vertex_id;
     DvzId square_params_id;
 
-    DvzId sphere_graphics_id;
-    DvzId sphere_graphics_destination_id; // HACK: separate pipeline with different blending mode
+    // NOTE: for now, 1 graphics pipeline per layer to support multiple fixed states and texture
+    // bindings (multiple descriptors per pipeline not yet supported by Datoviz Rendering
+    // Protocol).
+    DvzId sphere_graphics_ids[DSTIM_MAX_LAYERS];
     DvzId sphere_vertex_id;
     DvzId sphere_index_id;
-    DvzId sphere_ubo_id;
 
-    DvzId texture_id;
-    DvzId sampler_id;
+    // NOTE: 1 texture and sampler per layer (hence, per sphere graphics pipeline).
+    DvzId texture_ids[DSTIM_MAX_LAYERS];
+    DvzId sampler_ids[DSTIM_MAX_LAYERS];
 
     mat4 model;
 
@@ -249,6 +264,17 @@ struct DStimPush
 /*************************************************************************************************/
 /*  Utils                                                                                        */
 /*************************************************************************************************/
+
+static void* _cpy(DvzSize size, const void* data)
+{
+    if (data == NULL)
+        return NULL;
+    void* data_cpy = malloc(size);
+    memcpy(data_cpy, data, size);
+    return data_cpy;
+}
+
+
 
 static void* read_file(const char* filename, DvzSize* size)
 {
@@ -341,9 +367,6 @@ static DvzId create_square_pipeline(DvzBatch* batch)
 
     set_shaders_spv(batch, graphics_id, "shaders/square.vert.spv", "shaders/square.frag.spv");
 
-    // HACK: standard blend mode for square pipeline
-    dvz_set_blend(batch, graphics_id, DVZ_BLEND_STANDARD);
-
     // Primitive topology.
     dvz_set_primitive(batch, graphics_id, DVZ_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
@@ -365,7 +388,7 @@ static DvzId create_square_pipeline(DvzBatch* batch)
 
 
 
-static DvzId create_sphere_pipeline(DvzBatch* batch, DvzBlendType blend)
+static DvzId create_sphere_pipeline(DvzBatch* batch)
 {
     // Create a custom graphics.
     DvzRequest req = dvz_create_graphics(batch, DVZ_GRAPHICS_CUSTOM, 0);
@@ -378,10 +401,6 @@ static DvzId create_sphere_pipeline(DvzBatch* batch, DvzBlendType blend)
 
     // DEBUG
     // dvz_set_primitive(batch, graphics_id, DVZ_PRIMITIVE_TOPOLOGY_POINT_LIST);
-
-    // NOTE: will need support for dynamic blend state here, in which case this fixed state
-    // function won't be needed anymore as this will be set in the command buffer.
-    dvz_set_blend(batch, graphics_id, blend);
 
     // dvz_set_cull(batch, graphics_id, DVZ_CULL_MODE_BACK);
     dvz_set_front(batch, graphics_id, DVZ_FRONT_FACE_CLOCKWISE);
@@ -403,7 +422,6 @@ static DvzId create_sphere_pipeline(DvzBatch* batch, DvzBlendType blend)
 
     // Slots.
     dvz_set_slot(batch, graphics_id, 0, DVZ_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-    // dvz_set_slot(batch, graphics_id, 1, DVZ_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
     // Push constants.
     dvz_set_push(
@@ -424,7 +442,6 @@ static void upload_rectangle(DvzBatch* batch, DvzId vertex_id, vec2 offset, vec2
     float y = offset[1];
     float w = shape[0];
     float h = shape[1];
-    // log_info("pos: %f %f %f %f", x, y, w, h);
 
     DStimSquareVertex data[] = {
 
@@ -453,8 +470,6 @@ static void rectangle_color(
 
     // NOTE: from uint8_t to float [0.0, 1.0] for GPU uniform
     vec4 color = {red / 255.0, green / 255.0, blue / 255.0, alpha / 255.0};
-
-    // log_info("color: %f %f %f %f", color[0], color[1], color[2], color[3]);
 
     DvzRequest req = dvz_upload_dat(batch, params_id, 0, sizeof(vec4), &color, 0);
 }
@@ -528,11 +543,19 @@ static void create_sphere_vertex_buffer(DStim* stim, uint32_t sphere_vertex_coun
     DvzRequest req = dvz_create_dat(
         batch, DVZ_BUFFER_TYPE_VERTEX, sphere_vertex_count * sizeof(DStimVertex), 0);
     stim->sphere_vertex_id = req.id;
+}
 
-    // HACK: two pipelines for different blending modes
-    req = dvz_bind_vertex(batch, stim->sphere_graphics_id, 0, stim->sphere_vertex_id, 0);
-    req =
-        dvz_bind_vertex(batch, stim->sphere_graphics_destination_id, 0, stim->sphere_vertex_id, 0);
+
+
+static void bind_sphere_vertex_buffer(DStim* stim, uint32_t layer_idx)
+{
+    ANN(stim);
+    ASSERT(layer_idx < DSTIM_MAX_LAYERS);
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    dvz_bind_vertex(batch, stim->sphere_graphics_ids[layer_idx], 0, stim->sphere_vertex_id, 0);
 }
 
 
@@ -548,10 +571,19 @@ static void create_sphere_index_buffer(DStim* stim, uint32_t sphere_index_count)
     DvzRequest req =
         dvz_create_dat(batch, DVZ_BUFFER_TYPE_INDEX, sphere_index_count * sizeof(DvzIndex), 0);
     stim->sphere_index_id = req.id;
+}
 
-    // HACK: two pipelines for different blending modes
-    req = dvz_bind_index(batch, stim->sphere_graphics_id, stim->sphere_index_id, 0);
-    req = dvz_bind_index(batch, stim->sphere_graphics_destination_id, stim->sphere_index_id, 0);
+
+
+static void bind_sphere_index_buffer(DStim* stim, uint32_t layer_idx)
+{
+    ANN(stim);
+    ASSERT(layer_idx < DSTIM_MAX_LAYERS);
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    dvz_bind_index(batch, stim->sphere_graphics_ids[layer_idx], stim->sphere_index_id, 0);
 }
 
 
@@ -581,38 +613,226 @@ static void load_sphere_index_data(DStim* stim, uint32_t sphere_index_count)
 
 
 
-static void create_texture(
-    DStim* stim, DvzFormat format, uint32_t width, uint32_t height, //
-    DvzFilter filter, DvzSamplerAddressMode address_mode)
+static void
+create_texture(DStim* stim, uint32_t layer_idx, DvzFormat format, uint32_t width, uint32_t height)
 {
     ANN(stim);
+    GET_LAYER
+
+    ASSERT(width > 0);
+    ASSERT(height > 0);
 
     DvzBatch* batch = stim->batch;
     ANN(batch);
 
     // Texture.
     DvzRequest req = dvz_create_tex(batch, 2, format, (uvec3){width, height, 1}, 0);
-    stim->texture_id = req.id;
+    stim->texture_ids[layer_idx] = req.id;
+}
 
-    req = dvz_create_sampler(batch, filter, address_mode);
-    DvzId sampler_id = req.id;
 
-    // HACK: use the address mode to bind to one or the other graphics pipeline
-    // Proper fix will be not to bind a texture to graphics pipeline but to
-    // set it within a command buffer.
-    if (address_mode == DVZ_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER)
+
+static void create_sampler(
+    DStim* stim, uint32_t layer_idx, DvzFilter filter, DvzSamplerAddressMode address_mode)
+{
+    ANN(stim);
+    ASSERT(layer_idx < DSTIM_MAX_LAYERS);
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    DvzRequest req = dvz_create_sampler(batch, filter, address_mode);
+    stim->sampler_ids[layer_idx] = req.id;
+}
+
+
+
+static void bind_texture(DStim* stim, uint32_t layer_idx)
+{
+    ANN(stim);
+    ASSERT(layer_idx < DSTIM_MAX_LAYERS);
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    DvzId tex_id = stim->texture_ids[layer_idx];
+    ASSERT(tex_id != DVZ_ID_NONE);
+
+    dvz_bind_tex(
+        batch, stim->sphere_graphics_ids[layer_idx], 0, tex_id, stim->sampler_ids[layer_idx],
+        (uvec3){0, 0, 0});
+}
+
+
+
+static void upload_texture(DStim* stim, uint32_t layer_idx)
+{
+    ANN(stim);
+    GET_LAYER
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    DvzId tex_id = stim->texture_ids[layer_idx];
+    ASSERT(tex_id != DVZ_ID_NONE);
+
+    uint32_t width = layer->tex_width;
+    uint32_t height = layer->tex_height;
+    DvzSize tex_nbytes = layer->tex_nbytes;
+    uint8_t* rgba = layer->rgba;
+
+    ASSERT(width > 0);
+    ASSERT(height > 0);
+    ASSERT(tex_nbytes > 0);
+    ANN(rgba);
+
+    dvz_upload_tex(
+        stim->batch, tex_id, (uvec3){0, 0, 0}, (uvec3){width, height, 1}, tex_nbytes, rgba, 0);
+}
+
+
+
+static void set_blend(DStim* stim, uint32_t layer_idx)
+{
+    ANN(stim);
+    GET_LAYER
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    DvzBlendType blend = DVZ_BLEND_DISABLE;
+
+    if (layer->blending == DSTIM_BLENDING_DST)
     {
-        // layer 0
-        dvz_bind_tex(
-            batch, stim->sphere_graphics_id, 0, stim->texture_id, sampler_id, (uvec3){0, 0, 0});
+        blend = DVZ_BLEND_DESTINATION;
     }
-    else if (address_mode == DVZ_SAMPLER_ADDRESS_MODE_REPEAT)
-    {
-        // layer 1
-        dvz_bind_tex(
-            batch, stim->sphere_graphics_destination_id, 0, stim->texture_id, sampler_id,
-            (uvec3){0, 0, 0});
-    }
+
+    dvz_set_blend(batch, stim->sphere_graphics_ids[layer_idx], blend);
+}
+
+
+
+static void set_mask(DStim* stim, uint32_t layer_idx)
+{
+    ANN(stim);
+    GET_LAYER
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    dvz_set_mask(batch, stim->sphere_graphics_ids[layer_idx], layer->mask);
+}
+
+
+
+static void prepare_sphere_pipeline(DStim* stim, uint32_t layer_idx)
+{
+    ANN(stim);
+    GET_LAYER
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    stim->sphere_graphics_ids[layer_idx] = create_sphere_pipeline(batch);
+
+    // Bind buffers to the new pipeline.
+    bind_sphere_vertex_buffer(stim, layer_idx);
+    bind_sphere_index_buffer(stim, layer_idx);
+
+    // Create texture.
+    DvzFormat format = layer->format;
+    uint32_t width = layer->tex_width;
+    uint32_t height = layer->tex_height;
+
+    // NOTE TODO: cannot change texture size after layer creation. Need to emit texture resize
+    // request.
+    create_texture(stim, layer_idx, format, width, height);
+
+    // Create sampler.
+    DvzFilter filter = layer->interpolation == DSTIM_INTERPOLATION_NEAREST ? DVZ_FILTER_NEAREST
+                                                                           : DVZ_FILTER_LINEAR;
+
+    DvzSamplerAddressMode address_mode = layer->is_periodic
+                                             ? DVZ_SAMPLER_ADDRESS_MODE_REPEAT
+                                             : DVZ_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+
+    create_sampler(stim, layer_idx, filter, address_mode);
+
+    // Bind the texture and sampler to the layer's pipeline.
+    bind_texture(stim, layer_idx);
+
+    // NOTE: address the case where these parameters change afterwards.
+    set_blend(stim, layer_idx);
+    set_mask(stim, layer_idx);
+}
+
+
+
+static void push_sphere_pipeline(DStim* stim, uint32_t layer_idx, DStimPush* push)
+{
+    ANN(stim);
+    GET_LAYER
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    // Send the push constant to the command buffer.
+    dvz_record_push(
+        batch, stim->canvas_id, stim->sphere_graphics_ids[layer_idx],
+        DVZ_SHADER_VERTEX | DVZ_SHADER_FRAGMENT, 0, sizeof(DStimPush), push);
+}
+
+
+
+static void draw_sphere_pipeline(DStim* stim, uint32_t layer_idx)
+{
+    ANN(stim);
+    GET_LAYER
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    // Sphere.
+    dvz_record_draw_indexed(
+        batch, stim->canvas_id, stim->sphere_graphics_ids[layer_idx], 0, 0,
+        stim->sphere_index_count, 0, 1);
+}
+
+
+
+static void fill_push(DStim* stim, uint32_t layer_idx, mat4 projection, DStimPush* push)
+{
+    ANN(stim);
+    ANN(push);
+    GET_LAYER
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    // Per-screen projection matrix.
+    glm_mat4_copy(projection, push->projection);
+
+    // Per-layer view matrix.
+    glm_mat4_copy(layer->view, push->view);
+
+    // Push constants parameters.
+    push->min_color[0] = layer->min_color[0] / 255.0;
+    push->min_color[1] = layer->min_color[1] / 255.0;
+    push->min_color[2] = layer->min_color[2] / 255.0;
+    push->min_color[3] = layer->min_color[3] / 255.0;
+
+    push->max_color[0] = layer->max_color[0] / 255.0;
+    push->max_color[1] = layer->max_color[1] / 255.0;
+    push->max_color[2] = layer->max_color[2] / 255.0;
+    push->max_color[3] = layer->max_color[3] / 255.0;
+
+    push->tex_offset[0] = layer->tex_offset[0];
+    push->tex_offset[1] = layer->tex_offset[1];
+
+    push->tex_size[0] = layer->tex_size[0];
+    push->tex_size[1] = layer->tex_size[1];
+
+    push->tex_angle = layer->tex_angle;
 }
 
 
@@ -637,6 +857,10 @@ DStim* dstim_init(uint32_t width, uint32_t height)
     DStim* stim = (DStim*)calloc(1, sizeof(DStim));
     stim->width = width;
     stim->height = height;
+    for (uint32_t i = 0; i < DSTIM_MAX_LAYERS; i++)
+    {
+        stim->layers[i].is_blank = true;
+    }
 
     // App.
     // --------------------------------------------------------------------------------------------
@@ -672,10 +896,6 @@ DStim* dstim_init(uint32_t width, uint32_t height)
     // --------------------------------------------------------------------------------------------
 
     uint32_t sphere_vertex_count = 20706;
-
-    // HACK: two pipelines for the different blending modes.
-    stim->sphere_graphics_id = create_sphere_pipeline(batch, DVZ_BLEND_DISABLE);
-    stim->sphere_graphics_destination_id = create_sphere_pipeline(batch, DVZ_BLEND_DESTINATION);
 
     // Create the vertex buffer dat for the sphere.
     create_sphere_vertex_buffer(stim, sphere_vertex_count);
@@ -779,13 +999,6 @@ double dstim_update(DStim* stim)
     DvzId canvas_id = stim->canvas_id;
     ASSERT(canvas_id != DVZ_ID_NONE);
 
-    // HACK: if model_has_changed or view_has_changed:
-    //     recreate pipeline with spec constant for view
-
-
-    // Commands.
-    // --------------------------------------------------------------------------------------------
-
     // Begin recording.
     dvz_record_begin(batch, canvas_id);
 
@@ -804,6 +1017,30 @@ double dstim_update(DStim* stim)
     // Global model matrix.
     glm_mat4_copy(stim->model, push.model);
 
+    // First pass: go through all layers and prepare them if needed.
+    for (uint32_t layer_idx = 0; layer_idx < stim->layer_count; layer_idx++)
+    {
+        layer = &stim->layers[layer_idx];
+        ANN(layer);
+
+        // Only once per application: create the pipeline, texture, sampler, and make the bindings.
+        if (layer->is_blank)
+        {
+            log_debug("layer %d: prepare sphere pipeline", layer_idx);
+            prepare_sphere_pipeline(stim, layer_idx);
+            layer->is_blank = false;
+        }
+
+        // Every time the texture data changes: upload it.
+        if (layer->is_texture_dirty)
+        {
+            log_debug("layer %d: upload texture", layer_idx);
+            upload_texture(stim, layer_idx);
+            layer->is_texture_dirty = false;
+        }
+    }
+
+
     // Loop over all screens.
     for (uint32_t screen_idx = 0; screen_idx < stim->screen_count; screen_idx++)
     {
@@ -816,11 +1053,6 @@ double dstim_update(DStim* stim)
             (vec2){screen->offset[0], screen->offset[1]}, //
             (vec2){screen->size[0], screen->size[1]});
 
-        // Push constants.
-
-        // Per-screen projection matrix.
-        glm_mat4_copy(screen->projection, push.projection);
-
         // Loop over all layers.
         for (uint32_t layer_idx = 0; layer_idx < stim->layer_count; layer_idx++)
         {
@@ -828,58 +1060,19 @@ double dstim_update(DStim* stim)
             ANN(layer);
 
             // Do not draw invisible layers.
-            if (layer->is_hidden)
+            if (!layer->is_visible)
                 continue;
 
-            // Per-layer view matrix.
-            glm_mat4_copy(layer->view, push.view);
+            log_debug("layer %d: record draw command", layer_idx);
+            fill_push(stim, layer_idx, screen->projection, &push);
+            push_sphere_pipeline(stim, layer_idx, &push);
+            draw_sphere_pipeline(stim, layer_idx);
 
-            // Push constants parameters.
-            push.min_color[0] = layer->min_color[0] / 255.0;
-            push.min_color[1] = layer->min_color[1] / 255.0;
-            push.min_color[2] = layer->min_color[2] / 255.0;
-            push.min_color[3] = layer->min_color[3] / 255.0;
+            // TODO: use dynamic state instead
 
-            push.max_color[0] = layer->max_color[0] / 255.0;
-            push.max_color[1] = layer->max_color[1] / 255.0;
-            push.max_color[2] = layer->max_color[2] / 255.0;
-            push.max_color[3] = layer->max_color[3] / 255.0;
-
-            push.tex_offset[0] = layer->tex_offset[0];
-            push.tex_offset[1] = layer->tex_offset[1];
-
-            push.tex_size[0] = layer->tex_size[0];
-            push.tex_size[1] = layer->tex_size[1];
-
-            push.tex_angle = layer->tex_angle;
-
-            // TODO: support color mask, will require Datoviz Rendering Protocol updates.
-            // TODO: use dynamic state instead, to avoid dealing with 2 pipelines
-
-            // HACK: select one or the other graphics pipeline depending on the blend mode.
-            switch (layer->blending)
-            {
-
-            case DSTIM_BLENDING_NONE:
-                sphere_graphics_id = stim->sphere_graphics_id;
-                break;
-
-            case DSTIM_BLENDING_DST:
-                sphere_graphics_id = stim->sphere_graphics_destination_id;
-                break;
-
-            default:
-                break;
-            }
-
-            // Send the push constant to the command buffer.
-            dvz_record_push(
-                batch, canvas_id, sphere_graphics_id, DVZ_SHADER_VERTEX | DVZ_SHADER_FRAGMENT, 0,
-                sizeof(DStimPush), &push);
-
-            // Sphere.
-            dvz_record_draw_indexed(
-                batch, canvas_id, sphere_graphics_id, 0, 0, stim->sphere_index_count, 0, 1);
+            // NOTE TODO: optimization: once fixed state updates are supported in DRP, avoid
+            // recreating the pipeline if the states have not changed (or perhaps this should be
+            // done by the renderer)
         }
     }
 
@@ -906,6 +1099,17 @@ void dstim_cleanup(DStim* stim)
 
     // Cleanup.
     dvz_app_destroy(stim->app);
+
+    // Free texture copies in layers.
+    for (uint32_t layer_idx = 0; layer_idx < stim->layer_count; layer_idx++)
+    {
+        if (stim->layers[layer_idx].rgba != NULL)
+        {
+            FREE(stim->layers[layer_idx].rgba);
+        }
+    }
+
+    FREE(stim);
 }
 
 
@@ -943,53 +1147,51 @@ void dstim_projection(DStim* stim, uint32_t screen_idx, mat4 projection)
 
 void dstim_layer_texture(
     DStim* stim, uint32_t layer_idx, DvzFormat format, //
-    uint32_t width, uint32_t height, DvzSize tex_size, uint8_t* rgba)
+    uint32_t width, uint32_t height, DvzSize tex_nbytes, uint8_t* rgba)
 {
     ANN(stim);
 
+    ASSERT(tex_nbytes > 0);
+    ASSERT(width > 0);
+    ASSERT(height > 0);
+    ANN(rgba);
+
     GET_LAYER
-    layer->img_size[0] = width;
-    layer->img_size[1] = height;
-    layer->rgba = rgba;
+    TOUCH_LAYER_TEXTURE
 
-    // Create texture, assuming layer interpolation has been set BEFORE.
-    DvzFilter filter = layer->interpolation == DSTIM_INTERPOLATION_NEAREST ? DVZ_FILTER_NEAREST
-                                                                           : DVZ_FILTER_LINEAR;
+    layer->format = format;
+    layer->tex_width = width;
+    layer->tex_height = height;
+    layer->tex_nbytes = tex_nbytes;
 
-    DvzSamplerAddressMode address_mode = layer->is_periodic
-                                             ? DVZ_SAMPLER_ADDRESS_MODE_REPEAT
-                                             : DVZ_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-
-    // HACK TODO: avoid recreating a new texture when calling layer_texture.
-    create_texture(stim, format, width, height, filter, address_mode);
-
-    // Upload the texture data.
-    dvz_upload_tex(
-        stim->batch, stim->texture_id, (uvec3){0, 0, 0}, (uvec3){width, height, 1}, //
-        tex_size, rgba, 0);
+    // Free the existing copy if a new one is passed.
+    if (layer->rgba != NULL)
+    {
+        FREE(layer->rgba);
+    }
+    layer->rgba =
+        _cpy(tex_nbytes, rgba); // NOTE: make a copy for safety, but will need to free it.
 }
 
 
 
-// HACK: need to be set BEFORE layer_texture (will be fixed after Datoviz Rendering Protocol
-// updates)
 void dstim_layer_interpolation(DStim* stim, uint32_t layer_idx, DStimInterpolation interpolation)
 {
     ANN(stim);
 
     GET_LAYER
+    TOUCH_LAYER
     layer->interpolation = interpolation;
 }
 
 
 
-// HACK: need to be set BEFORE layer_texture (will be fixed after Datoviz Rendering Protocol
-// updates)
 void dstim_layer_periodic(DStim* stim, uint32_t layer_idx, bool is_periodic)
 {
     ANN(stim);
 
     GET_LAYER
+    TOUCH_LAYER
     layer->is_periodic = is_periodic;
 }
 
@@ -998,15 +1200,10 @@ void dstim_layer_periodic(DStim* stim, uint32_t layer_idx, bool is_periodic)
 void dstim_layer_blending(DStim* stim, uint32_t layer_idx, DStimBlending blending)
 {
     ANN(stim);
-    // per-layer blending options (there will be a few predefined options)
 
     GET_LAYER
+    TOUCH_LAYER
     layer->blending = blending;
-
-    // TODO: implement other options
-    // TODO: DRP should allow more flexibility here
-    // TODO: color mask
-    // TODO: per-layer blending options (dynamic state?)
 }
 
 
@@ -1016,10 +1213,12 @@ void dstim_layer_mask(DStim* stim, uint32_t layer_idx, bool red, bool green, boo
     ANN(stim);
 
     GET_LAYER
-    layer->mask[0] = red;
-    layer->mask[1] = green;
-    layer->mask[2] = blue;
-    layer->mask[3] = alpha;
+    TOUCH_LAYER
+
+    layer->mask = (red ? DVZ_MASK_COLOR_R : 0) |   //
+                  (green ? DVZ_MASK_COLOR_G : 0) | //
+                  (blue ? DVZ_MASK_COLOR_B : 0) |  //
+                  (alpha ? DVZ_MASK_COLOR_A : 0);  //
 }
 
 
@@ -1030,6 +1229,7 @@ void dstim_layer_view(DStim* stim, uint32_t layer_idx, mat4 view)
     // per-layer view matrix
 
     GET_LAYER
+    TOUCH_LAYER
     glm_mat4_copy(view, layer->view);
 }
 
@@ -1040,6 +1240,7 @@ void dstim_layer_angle(DStim* stim, uint32_t layer_idx, float tex_angle)
     ANN(stim);
 
     GET_LAYER
+    TOUCH_LAYER
     layer->tex_angle = tex_angle;
 }
 
@@ -1050,19 +1251,21 @@ void dstim_layer_offset(DStim* stim, uint32_t layer_idx, float tex_x, float tex_
     ANN(stim);
 
     GET_LAYER
+    TOUCH_LAYER
     layer->tex_offset[0] = tex_x;
     layer->tex_offset[1] = tex_y;
 }
 
 
 
-void dstim_layer_size(DStim* stim, uint32_t layer_idx, float tex_width, float tex_height)
+void dstim_layer_size(DStim* stim, uint32_t layer_idx, float tex_size_x, float tex_size_y)
 {
     ANN(stim);
 
     GET_LAYER
-    layer->tex_size[0] = tex_width;
-    layer->tex_size[1] = tex_height;
+    TOUCH_LAYER
+    layer->tex_size[0] = tex_size_x;
+    layer->tex_size[1] = tex_size_y;
 }
 
 
@@ -1073,6 +1276,7 @@ void dstim_layer_min_color(
     ANN(stim);
 
     GET_LAYER
+    TOUCH_LAYER
     layer->min_color[0] = red;
     layer->min_color[1] = green;
     layer->min_color[2] = blue;
@@ -1087,6 +1291,7 @@ void dstim_layer_max_color(
     ANN(stim);
 
     GET_LAYER
+    TOUCH_LAYER
     layer->max_color[0] = red;
     layer->max_color[1] = green;
     layer->max_color[2] = blue;
@@ -1095,12 +1300,12 @@ void dstim_layer_max_color(
 
 
 
-void dstim_layer_toggle(DStim* stim, uint32_t layer_idx, bool is_visible)
+void dstim_layer_show(DStim* stim, uint32_t layer_idx, bool is_visible)
 {
     ANN(stim);
 
     GET_LAYER
-    layer->is_hidden = !is_visible;
+    layer->is_visible = is_visible;
 }
 
 
@@ -1142,80 +1347,81 @@ int main(int argc, char** argv)
 
     mat4* view = read_file("data/view", NULL);
 
-    // // Layers.
-    // {
-    //     uint32_t width = 3;
-    //     uint32_t height = 3;
-    //     DvzSize tex_size = 0;
-    //     uint8_t* rgba = read_file("data/img", &tex_size);
-    //     ASSERT(tex_size > 0);
-    //     ASSERT(tex_size == width * height * 4 * sizeof(uint8_t));
-    //     dstim_layer_texture(stim, 0, DVZ_FORMAT_R8G8B8A8_UNORM, width, height, tex_size, rgba);
-    //     FREE(rgba);
-
-    //     // Layer parameters.
-    //     dstim_layer_angle(stim, 0, 45.0);
-    //     dstim_layer_offset(stim, 0, 0, 0);
-    //     dstim_layer_size(stim, 0, 150, 150);
-    //     dstim_layer_min_color(stim, 0, 0, 0, 0, 128);
-    //     dstim_layer_max_color(stim, 0, 255, 255, 255, 255);
-
-    //     dstim_layer_view(stim, 0, *view);
-    // }
-
-    // Layer 0: Gaussian stencil.
+    // Layers.
+    if (0)
     {
-        // HACK: for now, need to set those before setting the texture.
-        dstim_layer_interpolation(stim, 0, DSTIM_INTERPOLATION_LINEAR);
-        dstim_layer_periodic(stim, 0, false);
-
-        uint32_t width = 61;
-        uint32_t height = 61;
-        DvzSize tex_size = 0;
-        uint8_t* rgba = read_file("data/gaussianStencil", &tex_size);
-        ASSERT(tex_size > 0);
-        ASSERT(tex_size == width * height * 4 * sizeof(uint8_t));
-        dstim_layer_texture(stim, 0, DVZ_FORMAT_R8G8B8A8_UNORM, width, height, tex_size, rgba);
+        uint32_t width = 3;
+        uint32_t height = 3;
+        DvzSize tex_nbytes = 0;
+        uint8_t* rgba = read_file("data/img", &tex_nbytes);
+        ASSERT(tex_nbytes > 0);
+        ASSERT(tex_nbytes == width * height * 4 * sizeof(uint8_t));
+        dstim_layer_texture(stim, 0, DVZ_FORMAT_R8G8B8A8_UNORM, width, height, tex_nbytes, rgba);
         FREE(rgba);
 
         // Layer parameters.
         dstim_layer_blending(stim, 0, DSTIM_BLENDING_NONE);
+        dstim_layer_periodic(stim, 0, false);
+        dstim_layer_angle(stim, 0, 45.0);
+        dstim_layer_offset(stim, 0, 0, 0);
+        dstim_layer_mask(stim, 0, true, true, true, true);
+        dstim_layer_size(stim, 0, 150, 150);
+        dstim_layer_min_color(stim, 0, 0, 0, 0, 0);
+        dstim_layer_max_color(stim, 0, 255, 255, 255, 255);
+        dstim_layer_view(stim, 0, *view);
+        dstim_layer_show(stim, 0, true);
+    }
+
+    // Layer 0: Gaussian stencil.
+    if (1)
+    {
+        uint32_t width = 61;
+        uint32_t height = 61;
+        DvzSize tex_nbytes = 0;
+        uint8_t* rgba = read_file("data/gaussianStencil", &tex_nbytes);
+        ASSERT(tex_nbytes > 0);
+        ASSERT(tex_nbytes == width * height * 4 * sizeof(uint8_t));
+        dstim_layer_texture(stim, 0, DVZ_FORMAT_R8G8B8A8_UNORM, width, height, tex_nbytes, rgba);
+        FREE(rgba);
+
+        // Layer parameters.
+        dstim_layer_blending(stim, 0, DSTIM_BLENDING_NONE);
+        dstim_layer_mask(stim, 0, false, false, false, true);
+        dstim_layer_interpolation(stim, 0, DSTIM_INTERPOLATION_LINEAR);
+        dstim_layer_periodic(stim, 0, false);
         dstim_layer_view(stim, 0, *view);
         dstim_layer_angle(stim, 0, 0.0);
         dstim_layer_offset(stim, 0, -90, 0);
         dstim_layer_size(stim, 0, 64.8, 64.8);
-        dstim_layer_mask(stim, 0, false, false, false, true);
         dstim_layer_min_color(stim, 0, 0, 0, 0, 0);
         dstim_layer_max_color(stim, 0, 255, 255, 255, 255);
-        dstim_layer_toggle(stim, 0, true);
+        dstim_layer_show(stim, 0, true);
     }
 
     // Layer 1: sinusoid grating.
+    if (1)
     {
-        // HACK: for now, need to set those before setting the texture.
-        dstim_layer_interpolation(stim, 1, DSTIM_INTERPOLATION_LINEAR);
-        dstim_layer_periodic(stim, 1, true);
-
         uint32_t width = 37;
         uint32_t height = 1;
-        DvzSize tex_size = 0;
-        uint8_t* rgba = read_file("data/sinusoidGrating", &tex_size);
-        ASSERT(tex_size > 0);
-        ASSERT(tex_size == width * height * 4 * sizeof(uint8_t));
-        dstim_layer_texture(stim, 1, DVZ_FORMAT_R8G8B8A8_UNORM, width, height, tex_size, rgba);
+        DvzSize tex_nbytes = 0;
+        uint8_t* rgba = read_file("data/sinusoidGrating", &tex_nbytes);
+        ASSERT(tex_nbytes > 0);
+        ASSERT(tex_nbytes == width * height * 4 * sizeof(uint8_t));
+        dstim_layer_texture(stim, 1, DVZ_FORMAT_R8G8B8A8_UNORM, width, height, tex_nbytes, rgba);
         FREE(rgba);
-
 
         // Layer parameters.
         dstim_layer_view(stim, 1, *view);
         dstim_layer_blending(stim, 1, DSTIM_BLENDING_DST);
+        dstim_layer_mask(stim, 1, true, true, true, true);
+        dstim_layer_interpolation(stim, 1, DSTIM_INTERPOLATION_LINEAR);
+        dstim_layer_periodic(stim, 1, true);
         dstim_layer_angle(stim, 1, 0.0);
         dstim_layer_offset(stim, 1, -90, 0);
         dstim_layer_size(stim, 1, 5.2632, 180);
-        dstim_layer_mask(stim, 1, true, true, true, true);
         dstim_layer_min_color(stim, 1, 0, 0, 0, 0);
         dstim_layer_max_color(stim, 1, 255, 255, 255, 255);
-        dstim_layer_toggle(stim, 1, true);
+        dstim_layer_show(stim, 1, true);
     }
 
 

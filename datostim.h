@@ -153,7 +153,7 @@ DSTIM_EXPORT void dstim_projection(DStim* stim, uint32_t screen_idx, mat4 projec
 
 DSTIM_EXPORT void dstim_layer_texture(
     DStim* stim, uint32_t layer_idx, DvzFormat format, uint32_t width, uint32_t height,
-    DvzSize tex_size, uint8_t* rgba);
+    DvzSize tex_nbytes, uint8_t* rgba);
 
 
 
@@ -191,7 +191,7 @@ DSTIM_EXPORT void dstim_layer_offset(DStim* stim, uint32_t layer_idx, float tex_
 
 
 DSTIM_EXPORT void
-dstim_layer_size(DStim* stim, uint32_t layer_idx, float tex_width, float tex_height);
+dstim_layer_size(DStim* stim, uint32_t layer_idx, float tex_size_x, float tex_size_y);
 
 
 
@@ -205,8 +205,7 @@ DSTIM_EXPORT void dstim_layer_max_color(
 
 
 
-DSTIM_EXPORT void
-dstim_layer_toggle(DStim* stim, uint32_t layer_idx, bool is_visible); // show/hide
+DSTIM_EXPORT void dstim_layer_show(DStim* stim, uint32_t layer_idx, bool is_visible); // show/hide
 
 
 
