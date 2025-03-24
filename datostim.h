@@ -137,7 +137,8 @@ DSTIM_EXPORT void dstim_projection(DStim* stim, uint32_t screen_idx, mat4 projec
 
 
 DSTIM_EXPORT void dstim_layer_texture(
-    DStim* stim, uint32_t layer_idx, uint32_t width, uint32_t height, uint8_t* rgba);
+    DStim* stim, uint32_t layer_idx, DvzFormat format, uint32_t width, uint32_t height,
+    DvzSize tex_size, uint8_t* rgba);
 
 
 

@@ -20,11 +20,6 @@ layout(location = 1) in vec2 vertexUV;
 layout(location = 0) out vec2 UV;
 
 
-// Specialization constants.
-layout(constant_id = 0) const mat4 model;
-layout(constant_id = 1) const mat4 view;
-
-
 // Push constant.
 layout(push_constant) uniform Push
 {
@@ -43,28 +38,29 @@ layout(push_constant) uniform Push
 params;
 
 
-// // Uniform struct shared by both shaders (a current limitation of Datoviz, that's why we put
-// // fragment shader stuff here).
-// layout(std140, binding = 0) uniform Uniform
-// {
-//     // WARNING: the variables should be sorted by decreasing size to avoid alignment issues.
-//     mat4 view;
-//     mat4 model;
-//     mat4 projection;
-//     vec4 maxColor;
-//     vec4 minColor;
-//     vec2 tex_offset; /* offset the texture, degrees */
-//     vec2 tex_size;   /* size of the texture, degrees */
-//     float tex_angle; /* rotate the texture, degrees */
-
-//     // For fragment shader.
-//     /* float viewAngle;*/ /* rotation of view, degrees */
-//     /* vec2 pos;*/        /* position of layer [azimuth, altitude], degrees */
-// }
-// ubo;
-
 // Descriptor slots.
 layout(binding = 0) uniform sampler2D myTextureSampler;
+
+
+// Uniform struct shared by both shaders (a current limitation of Datoviz, that's why we put
+// fragment shader stuff here).
+layout(std140, binding = 1) uniform Uniform
+{
+    // WARNING: the variables should be sorted by decreasing size to avoid alignment issues.
+    mat4 view;
+    mat4 model;
+    // mat4 projection;
+    // vec4 maxColor;
+    // vec4 minColor;
+    // vec2 tex_offset; /* offset the texture, degrees */
+    // vec2 tex_size;   /* size of the texture, degrees */
+    // float tex_angle; /* rotate the texture, degrees */
+
+    // For fragment shader.
+    /* float viewAngle;*/ /* rotation of view, degrees */
+    /* vec2 pos;*/        /* position of layer [azimuth, altitude], degrees */
+}
+ubo;
 
 
 void main()
@@ -78,7 +74,7 @@ void main()
     vec2 tex_offset = params.tex_offset;
     vec2 tex_size = params.tex_size;
 
-    gl_Position = params.projection * view * model * vec4(vertexPos.xyz, 1.0f);
+    gl_Position = params.projection * ubo.view * ubo.model * vec4(vertexPos.xyz, 1.0f);
 
     // Vulkan conversion.
     gl_Position.y *= -1.0;

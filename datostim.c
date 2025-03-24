@@ -52,6 +52,7 @@
         log_error("screen_idx must be lower than %d", DSTIM_MAX_SCREENS);                         \
         return;                                                                                   \
     }                                                                                             \
+    stim->screen_count = MAX(stim->screen_count, screen_idx + 1);                                 \
     DScreen* screen = &stim->screens[screen_idx];
 
 #define GET_LAYER                                                                                 \
@@ -60,6 +61,7 @@
         log_error("layer_idx must be lower than %d", DSTIM_MAX_LAYERS);                           \
         return;                                                                                   \
     }                                                                                             \
+    stim->layer_count = MAX(stim->layer_count, layer_idx + 1);                                    \
     DLayer* layer = &stim->layers[layer_idx];
 
 
@@ -74,6 +76,7 @@ typedef struct DStim DStim;
 typedef struct DStimSquareVertex DStimSquareVertex;
 typedef struct DStimVertex DStimVertex;
 typedef struct DStimPush DStimPush;
+typedef struct DStimParams DStimParams;
 
 
 
@@ -160,7 +163,7 @@ struct DLayer
     DStimBlending blending;
 
     bool is_periodic;
-    bool is_visible;
+    bool is_hidden; // false by default
 };
 
 
@@ -187,6 +190,7 @@ struct DStim
     DvzId sphere_graphics_id;
     DvzId sphere_vertex_id;
     DvzId sphere_index_id;
+    DvzId sphere_ubo_id;
 
     DvzId texture_id;
     DvzId sampler_id;
@@ -231,6 +235,14 @@ struct DStimPush
     vec2 tex_offset;
     vec2 tex_size;
     float tex_angle;
+};
+
+
+
+struct DStimParams
+{
+    mat4 model;
+    mat4 view;
 };
 
 
@@ -382,8 +394,8 @@ static DvzId create_sphere_pipeline(DvzBatch* batch)
         DVZ_FORMAT_R32G32_SFLOAT, offsetof(DStimVertex, vertexUV));
 
     // Slots.
-    // dvz_set_slot(batch, graphics_id, 0, DVZ_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     dvz_set_slot(batch, graphics_id, 0, DVZ_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    dvz_set_slot(batch, graphics_id, 1, DVZ_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
     // Push constants.
     dvz_set_push(
@@ -497,6 +509,22 @@ static void create_square(DStim* stim)
 
 
 
+static void create_sphere_params(DStim* stim)
+{
+    ANN(stim);
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    // UBO.
+    DvzRequest req = dvz_create_dat(
+        batch, DVZ_BUFFER_TYPE_UNIFORM, sizeof(DStimParams), DVZ_DAT_FLAGS_PERSISTENT_STAGING);
+    stim->sphere_ubo_id = req.id;
+    req = dvz_bind_dat(batch, stim->sphere_graphics_id, 1, stim->sphere_ubo_id, 0);
+}
+
+
+
 static void create_sphere_vertex_buffer(DStim* stim, uint32_t sphere_vertex_count)
 {
     ANN(stim);
@@ -556,7 +584,8 @@ static void load_sphere_index_data(DStim* stim, uint32_t sphere_index_count)
 
 
 
-static void create_texture(DStim* stim)
+static void
+create_texture(DStim* stim, DvzFormat format, uint32_t width, uint32_t height, DvzFilter filter)
 {
     ANN(stim);
 
@@ -564,31 +593,14 @@ static void create_texture(DStim* stim)
     ANN(batch);
 
     // Texture.
-    DvzRequest req = dvz_create_tex(batch, 2, DVZ_FORMAT_R8G8B8A8_UNORM, (uvec3){3, 3, 1}, 0);
+    DvzRequest req = dvz_create_tex(batch, 2, format, (uvec3){width, height, 1}, 0);
     stim->texture_id = req.id;
 
-    req = dvz_create_sampler(batch, DVZ_FILTER_NEAREST, DVZ_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
+    req = dvz_create_sampler(batch, filter, DVZ_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
     stim->sampler_id = req.id;
 
     dvz_bind_tex(
-        batch, stim->sphere_graphics_id, 1, stim->texture_id, stim->sampler_id, (uvec3){0, 0, 0});
-}
-
-
-
-static void load_texture(DStim* stim)
-{
-    ANN(stim);
-
-    DvzBatch* batch = stim->batch;
-    ANN(batch);
-
-    DvzSize tex_size = 0;
-    char* img = read_file("data/img", &tex_size);
-    assert(tex_size == 3 * 3 * 4 * 1);
-    DvzRequest req = dvz_upload_tex(
-        batch, stim->texture_id, (uvec3){0, 0, 0}, (uvec3){3, 3, 1}, tex_size, img, 0);
-    FREE(img);
+        batch, stim->sphere_graphics_id, 0, stim->texture_id, stim->sampler_id, (uvec3){0, 0, 0});
 }
 
 
@@ -659,8 +671,7 @@ DStim* dstim_init(uint32_t width, uint32_t height)
     create_sphere_index_buffer(stim, stim->sphere_index_count);
     load_sphere_index_data(stim, stim->sphere_index_count);
 
-    create_texture(stim);
-    load_texture(stim);
+    create_sphere_params(stim);
 
 
     // Canvas.
@@ -800,7 +811,7 @@ double dstim_update(DStim* stim)
             ANN(layer);
 
             // Do not draw invisible layers.
-            if (!layer->is_visible)
+            if (layer->is_hidden)
                 continue;
 
             // Push constants struct.
@@ -836,6 +847,7 @@ double dstim_update(DStim* stim)
     }
 
     // Square.
+    dvz_record_viewport(batch, canvas_id, (vec2){0, 0}, (vec2){stim->width, stim->height});
     dvz_record_draw(batch, canvas_id, stim->square_graphics_id, 0, SQUARE_VERTEX_COUNT, 0, 1);
 
     // End recording.
@@ -893,7 +905,8 @@ void dstim_projection(DStim* stim, uint32_t screen_idx, mat4 projection)
 /*************************************************************************************************/
 
 void dstim_layer_texture(
-    DStim* stim, uint32_t layer_idx, uint32_t width, uint32_t height, uint8_t* rgba)
+    DStim* stim, uint32_t layer_idx, DvzFormat format, //
+    uint32_t width, uint32_t height, DvzSize tex_size, uint8_t* rgba)
 {
     ANN(stim);
 
@@ -901,10 +914,24 @@ void dstim_layer_texture(
     layer->img_size[0] = width;
     layer->img_size[1] = height;
     layer->rgba = rgba;
+
+    // Create texture, assuming layer interpolation has been set BEFORE.
+    DvzFilter filter = layer->interpolation == DSTIM_INTERPOLATION_NEAREST ? DVZ_FILTER_NEAREST
+                                                                           : DVZ_FILTER_LINEAR;
+
+    // NOTE TODO: avoid recreating a new texture when calling layer_texture.
+    create_texture(stim, format, width, height, filter);
+
+    // Upload the texture data.
+    dvz_upload_tex(
+        stim->batch, stim->texture_id, (uvec3){0, 0, 0}, (uvec3){width, height, 1}, //
+        tex_size, rgba, 0);
 }
 
 
 
+// NOTE HACK: need to be set BEFORE layer_texture (will be fixed after Datoviz Rendering Protocol
+// updates)
 void dstim_layer_interpolation(DStim* stim, uint32_t layer_idx, DStimInterpolation interpolation)
 {
     ANN(stim);
@@ -968,6 +995,12 @@ void dstim_layer_view(DStim* stim, uint32_t layer_idx, mat4 view)
 
     GET_LAYER
     glm_mat4_copy(view, layer->view);
+
+
+    DStimParams params = {0};
+    glm_mat4_copy(stim->model, params.model);
+    glm_mat4_copy(layer->view, params.view);
+    dvz_upload_dat(stim->batch, stim->sphere_ubo_id, 0, sizeof(DStimParams), &params, 0);
 
     /*
     warning: only the first layer's view can be set for now
@@ -1042,7 +1075,7 @@ void dstim_layer_toggle(DStim* stim, uint32_t layer_idx, bool is_visible)
     ANN(stim);
 
     GET_LAYER
-    layer->is_visible = is_visible;
+    layer->is_hidden = !is_visible;
 }
 
 
@@ -1055,11 +1088,62 @@ int main(int argc, char** argv)
 {
     DStim* stim = dstim_init(DSTIM_DEFAULT_WIDTH, DSTIM_DEFAULT_HEIGHT);
 
+
+    mat4* model = read_file("data/model", NULL);
+    dstim_model(stim, *model);
+    FREE(model);
+
+    // Screens.
+    float w3 = (float)DSTIM_DEFAULT_WIDTH / 3.0;
+    float h = (float)DSTIM_DEFAULT_HEIGHT;
+
+    dstim_screen(stim, 0, 0 * w3, 0, w3, h);
+    dstim_screen(stim, 1, 1 * w3, 0, w3, h);
+    dstim_screen(stim, 2, 2 * w3, 0, w3, h);
+
+    mat4* proj1 = read_file("data/screen1", NULL);
+    dstim_projection(stim, 0, *proj1);
+    FREE(proj1);
+
+    mat4* proj2 = read_file("data/screen2", NULL);
+    dstim_projection(stim, 1, *proj2);
+    FREE(proj2);
+
+    mat4* proj3 = read_file("data/screen3", NULL);
+    dstim_projection(stim, 2, *proj3);
+    FREE(proj3);
+
+
+
+    // Layer texture.
+    uint32_t width = 3;
+    uint32_t height = 3;
+    DvzSize tex_size = 0;
+    uint8_t* rgba = read_file("data/img", &tex_size);
+    ASSERT(tex_size > 0);
+    ASSERT(tex_size == width * height * 4 * sizeof(uint8_t));
+    dstim_layer_texture(stim, 0, DVZ_FORMAT_R8G8B8A8_UNORM, width, height, tex_size, rgba);
+    FREE(rgba);
+
+    // Layer parameters.
+    dstim_layer_angle(stim, 0, 0);
+    dstim_layer_offset(stim, 0, 0, 0);
+    dstim_layer_size(stim, 0, 30, 30);
+    dstim_layer_min_color(stim, 0, 0, 0, 0, 0);
+    dstim_layer_max_color(stim, 0, 255, 255, 255, 255);
+
+    mat4* view = read_file("data/view", NULL);
+    dstim_layer_view(stim, 0, *view);
+    FREE(view);
+
+
     // Important: run at least once.
     dstim_update(stim);
 
+
     // DEBUG
     dvz_app_run(stim->app, 0);
+
 
     dstim_cleanup(stim);
     return 0;

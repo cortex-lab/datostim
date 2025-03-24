@@ -39,7 +39,7 @@ void main()
     scale.y = 180/size.y;*/
 
     color = texture(myTextureSampler, UV).rgba;
-    color = color * (ubo.maxColor - ubo.minColor) + ubo.minColor;
+    color = color * (params.max_color - params.min_color) + params.min_color;
 
     // DEBUG
     // color = vec4(uv, 1, 1);
