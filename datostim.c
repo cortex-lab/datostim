@@ -989,123 +989,6 @@ void dstim_model(DStim* stim, mat4 model)
 
 
 
-void dstim_update(DStim* stim)
-{
-    ANN(stim);
-
-    DvzBatch* batch = stim->batch;
-    ANN(batch);
-
-    DvzId canvas_id = stim->canvas_id;
-    ASSERT(canvas_id != DVZ_ID_NONE);
-
-    // Begin recording.
-    dvz_record_begin(batch, canvas_id);
-
-    // Viewport.
-    dvz_record_viewport(batch, canvas_id, (vec2){0, 0}, (vec2){stim->width, stim->height});
-
-    // Background.
-    dvz_record_draw(batch, canvas_id, stim->background_graphics_id, 0, SQUARE_VERTEX_COUNT, 0, 1);
-
-
-    DScreen* screen = NULL;
-    DLayer* layer = NULL;
-    DStimPush push = {0};
-    DvzId sphere_graphics_id = DVZ_ID_NONE;
-
-    // Global model matrix.
-    glm_mat4_copy(stim->model, push.model);
-
-    // First pass: go through all layers and prepare them if needed.
-    for (uint32_t layer_idx = 0; layer_idx < stim->layer_count; layer_idx++)
-    {
-        layer = &stim->layers[layer_idx];
-        ANN(layer);
-
-        // Only once per application: create the pipeline, texture, sampler, and make the bindings.
-        if (layer->is_blank)
-        {
-            log_debug("layer %d: prepare sphere pipeline", layer_idx);
-            prepare_sphere_pipeline(stim, layer_idx);
-            layer->is_blank = false;
-        }
-
-        // Every time the texture data changes: upload it.
-        if (layer->is_texture_dirty)
-        {
-            log_debug("layer %d: upload texture", layer_idx);
-            upload_texture(stim, layer_idx);
-            layer->is_texture_dirty = false;
-        }
-    }
-
-
-    // Loop over all screens.
-    for (uint32_t screen_idx = 0; screen_idx < stim->screen_count; screen_idx++)
-    {
-        screen = &stim->screens[screen_idx];
-        ANN(screen);
-
-        // Screen viewport.
-        dvz_record_viewport(
-            batch, canvas_id,                             //
-            (vec2){screen->offset[0], screen->offset[1]}, //
-            (vec2){screen->size[0], screen->size[1]});
-
-        // Loop over all layers.
-        for (uint32_t layer_idx = 0; layer_idx < stim->layer_count; layer_idx++)
-        {
-            layer = &stim->layers[layer_idx];
-            ANN(layer);
-
-            // Do not draw invisible layers.
-            if (!layer->is_visible)
-                continue;
-
-            log_debug("layer %d: record draw command", layer_idx);
-            fill_push(stim, layer_idx, screen->projection, &push);
-            push_sphere_pipeline(stim, layer_idx, &push);
-            draw_sphere_pipeline(stim, layer_idx);
-
-            // TODO: use dynamic state instead
-
-            // NOTE TODO: optimization: once fixed state updates are supported in DRP, avoid
-            // recreating the pipeline if the states have not changed (or perhaps this should be
-            // done by the renderer)
-        }
-    }
-
-    // Square.
-    dvz_record_viewport(batch, canvas_id, (vec2){0, 0}, (vec2){stim->width, stim->height});
-    dvz_record_draw(batch, canvas_id, stim->square_graphics_id, 0, SQUARE_VERTEX_COUNT, 0, 1);
-
-    // End recording.
-    dvz_record_end(batch, canvas_id);
-
-
-    // Update the canvas.
-    dvz_app_submit(stim->app);
-}
-
-
-
-double dstim_time(DStim* stim)
-{
-    ANN(stim);
-    ANN(stim->app);
-    dvz_app_wait(stim->app);
-
-    // Return the presentation time.
-    uint64_t second = 0;
-    uint64_t nanosecond = 0;
-    dvz_app_timestamps(stim->app, stim->canvas_id, 1, &second, &nanosecond);
-    double time = (double)second + (double)nanosecond * 1e-9;
-    return time;
-}
-
-
-
 void dstim_cleanup(DStim* stim)
 {
     ANN(stim);
@@ -1123,6 +1006,59 @@ void dstim_cleanup(DStim* stim)
     }
 
     FREE(stim);
+}
+
+
+
+/*************************************************************************************************/
+/*  Events                                                                                       */
+/*************************************************************************************************/
+
+void dstim_mouse(DStim* stim, double* x, double* y, DvzMouseButton* button)
+{
+    ANN(stim);
+    ANN(stim->app);
+    dvz_app_mouse(stim->app, stim->canvas_id, x, y, button);
+}
+
+
+
+void dstim_keyboard(DStim* stim, DvzKeyCode* key)
+{
+    ANN(stim);
+    ANN(stim->app);
+    dvz_app_keyboard(stim->app, stim->canvas_id, key);
+}
+
+
+
+static inline double _time_to_double(uint64_t seconds, uint64_t nanoseconds)
+{
+    return (double)seconds + (double)nanoseconds * 1e-9;
+}
+
+
+
+double dstim_time(DStim* stim)
+{
+    DvzTime time = {0};
+    dvz_time(&time);
+    return _time_to_double(time.seconds, time.nanoseconds);
+}
+
+
+
+double dstim_frame_time(DStim* stim)
+{
+    ANN(stim);
+    ANN(stim->app);
+    dvz_app_wait(stim->app);
+
+    // Return the presentation time.
+    uint64_t seconds = 0;
+    uint64_t nanoseconds = 0;
+    dvz_app_timestamps(stim->app, stim->canvas_id, 1, &seconds, &nanoseconds);
+    return _time_to_double(seconds, nanoseconds);
 }
 
 
@@ -1324,39 +1260,167 @@ void dstim_layer_show(DStim* stim, uint32_t layer_idx, bool is_visible)
 
 
 /*************************************************************************************************/
+/*  Draw function                                                                                */
+/*************************************************************************************************/
+
+void dstim_update(DStim* stim)
+{
+    ANN(stim);
+
+    DvzBatch* batch = stim->batch;
+    ANN(batch);
+
+    DvzId canvas_id = stim->canvas_id;
+    ASSERT(canvas_id != DVZ_ID_NONE);
+
+    // Begin recording.
+    dvz_record_begin(batch, canvas_id);
+
+    // Viewport.
+    dvz_record_viewport(batch, canvas_id, (vec2){0, 0}, (vec2){stim->width, stim->height});
+
+    // Background.
+    dvz_record_draw(batch, canvas_id, stim->background_graphics_id, 0, SQUARE_VERTEX_COUNT, 0, 1);
+
+
+    DScreen* screen = NULL;
+    DLayer* layer = NULL;
+    DStimPush push = {0};
+    DvzId sphere_graphics_id = DVZ_ID_NONE;
+
+    // Global model matrix.
+    glm_mat4_copy(stim->model, push.model);
+
+    // First pass: go through all layers and prepare them if needed.
+    for (uint32_t layer_idx = 0; layer_idx < stim->layer_count; layer_idx++)
+    {
+        layer = &stim->layers[layer_idx];
+        ANN(layer);
+
+        // Only once per application: create the pipeline, texture, sampler, and make the bindings.
+        if (layer->is_blank)
+        {
+            log_debug("layer %d: prepare sphere pipeline", layer_idx);
+            prepare_sphere_pipeline(stim, layer_idx);
+            layer->is_blank = false;
+        }
+
+        // Every time the texture data changes: upload it.
+        if (layer->is_texture_dirty)
+        {
+            log_debug("layer %d: upload texture", layer_idx);
+            upload_texture(stim, layer_idx);
+            layer->is_texture_dirty = false;
+        }
+    }
+
+
+    // Loop over all screens.
+    for (uint32_t screen_idx = 0; screen_idx < stim->screen_count; screen_idx++)
+    {
+        screen = &stim->screens[screen_idx];
+        ANN(screen);
+
+        // Screen viewport.
+        dvz_record_viewport(
+            batch, canvas_id,                             //
+            (vec2){screen->offset[0], screen->offset[1]}, //
+            (vec2){screen->size[0], screen->size[1]});
+
+        // Loop over all layers.
+        for (uint32_t layer_idx = 0; layer_idx < stim->layer_count; layer_idx++)
+        {
+            layer = &stim->layers[layer_idx];
+            ANN(layer);
+
+            // Do not draw invisible layers.
+            if (!layer->is_visible)
+                continue;
+
+            log_debug("layer %d: record draw command", layer_idx);
+            fill_push(stim, layer_idx, screen->projection, &push);
+            push_sphere_pipeline(stim, layer_idx, &push);
+            draw_sphere_pipeline(stim, layer_idx);
+
+            // TODO: use dynamic state instead
+
+            // NOTE TODO: optimization: once fixed state updates are supported in DRP, avoid
+            // recreating the pipeline if the states have not changed (or perhaps this should be
+            // done by the renderer)
+        }
+    }
+
+    // Square.
+    dvz_record_viewport(batch, canvas_id, (vec2){0, 0}, (vec2){stim->width, stim->height});
+    dvz_record_draw(batch, canvas_id, stim->square_graphics_id, 0, SQUARE_VERTEX_COUNT, 0, 1);
+
+    // End recording.
+    dvz_record_end(batch, canvas_id);
+
+
+    // Update the canvas.
+    dvz_app_submit(stim->app);
+}
+
+
+
+/*************************************************************************************************/
 /*  Entry point                                                                                  */
 /*************************************************************************************************/
+
+static void _on_timer(DvzApp* app, DvzId window_id, DvzTimerEvent ev)
+{
+    DStim* stim = (DStim*)ev.user_data;
+    assert(stim != NULL);
+
+    // Get current time.
+    double time = dstim_time(stim);
+
+    // Get mouse state.
+    double x = 0;
+    double y = 0;
+    DvzMouseButton button = {0};
+    dstim_mouse(stim, &x, &y, &button);
+
+    // Get keyboard state.
+    DvzKeyCode key = {0};
+    dstim_keyboard(stim, &key);
+
+    // Display information.
+    log_info("time: %.3f, mouse (%.0f, %.0f), button %d, keyboard %d", time, x, y, button, key);
+}
+
 
 int main(int argc, char** argv)
 {
     DStim* stim = dstim_init(DSTIM_DEFAULT_WIDTH, DSTIM_DEFAULT_HEIGHT);
 
-
+    // Model.
     mat4* model = read_file("data/model", NULL);
     dstim_model(stim, *model);
     FREE(model);
 
-
     // Screens.
-    float w3 = (float)DSTIM_DEFAULT_WIDTH / 3.0;
-    float h = (float)DSTIM_DEFAULT_HEIGHT;
+    {
+        float w3 = (float)DSTIM_DEFAULT_WIDTH / 3.0;
+        float h = (float)DSTIM_DEFAULT_HEIGHT;
 
-    dstim_screen(stim, 0, 0 * w3, 0, w3, h);
-    dstim_screen(stim, 1, 1 * w3, 0, w3, h);
-    dstim_screen(stim, 2, 2 * w3, 0, w3, h);
+        dstim_screen(stim, 0, 0 * w3, 0, w3, h);
+        dstim_screen(stim, 1, 1 * w3, 0, w3, h);
+        dstim_screen(stim, 2, 2 * w3, 0, w3, h);
 
-    mat4* proj1 = read_file("data/screen1", NULL);
-    mat4* proj2 = read_file("data/screen2", NULL);
-    mat4* proj3 = read_file("data/screen3", NULL);
+        mat4* proj1 = read_file("data/screen1", NULL);
+        mat4* proj2 = read_file("data/screen2", NULL);
+        mat4* proj3 = read_file("data/screen3", NULL);
 
-    dstim_projection(stim, 0, *proj1);
-    dstim_projection(stim, 1, *proj2);
-    dstim_projection(stim, 2, *proj3);
+        dstim_projection(stim, 0, *proj1);
+        dstim_projection(stim, 1, *proj2);
+        dstim_projection(stim, 2, *proj3);
 
-    FREE(proj1);
-    FREE(proj2);
-    FREE(proj3);
-
+        FREE(proj1);
+        FREE(proj2);
+        FREE(proj3);
+    }
 
     mat4* view = read_file("data/view", NULL);
 
@@ -1438,20 +1502,19 @@ int main(int argc, char** argv)
     }
 
 
-
     // Important: run at least once.
     dstim_update(stim);
 
-    // Run a few frames and get the last frame presentation time BEFORE the window is destroyed.
-    dvz_app_run(stim->app, 5);
-    double time = dstim_time(stim);
-    log_info("time: %f", time);
+    // Timer.
+    float dt = 0.5;
+    dvz_app_timer(stim->app, 0, dt, 0);
+    dvz_app_ontimer(stim->app, _on_timer, stim);
 
     // DEBUG
     dvz_app_run(stim->app, 0);
 
+    // Cleanup.
     dstim_cleanup(stim);
     FREE(view);
-
     return 0;
 }

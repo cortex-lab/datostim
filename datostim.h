@@ -215,7 +215,19 @@ dstim_update(DStim* stim); // send all updates since that last call to this func
 
 
 
+DSTIM_EXPORT void dstim_mouse(DStim* stim, double* x, double* y, DvzMouseButton* button);
+
+
+
+DSTIM_EXPORT void dstim_keyboard(DStim* stim, DvzKeyCode* key);
+
+
+
 DSTIM_EXPORT double dstim_time(DStim* stim);
+
+
+
+DSTIM_EXPORT double dstim_frame_time(DStim* stim);
 
 
 
