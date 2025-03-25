@@ -209,9 +209,13 @@ DSTIM_EXPORT void dstim_layer_show(DStim* stim, uint32_t layer_idx, bool is_visi
 
 
 
-DSTIM_EXPORT double
+DSTIM_EXPORT void
 dstim_update(DStim* stim); // send all updates since that last call to this function to the GPU,
-                           // and returns the update timestamp when the update has finished
+// and returns the update timestamp when the update has finished
+
+
+
+DSTIM_EXPORT double dstim_time(DStim* stim);
 
 
 

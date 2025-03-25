@@ -989,7 +989,7 @@ void dstim_model(DStim* stim, mat4 model)
 
 
 
-double dstim_update(DStim* stim)
+void dstim_update(DStim* stim)
 {
     ANN(stim);
 
@@ -1086,9 +1086,22 @@ double dstim_update(DStim* stim)
 
     // Update the canvas.
     dvz_app_submit(stim->app);
+}
 
-    // TODO: returns the update timestamp when the update has finished
-    return 0;
+
+
+double dstim_time(DStim* stim)
+{
+    ANN(stim);
+    ANN(stim->app);
+    dvz_app_wait(stim->app);
+
+    // Return the presentation time.
+    uint64_t second = 0;
+    uint64_t nanosecond = 0;
+    dvz_app_timestamps(stim->app, stim->canvas_id, 1, &second, &nanosecond);
+    double time = (double)second + (double)nanosecond * 1e-9;
+    return time;
 }
 
 
@@ -1428,6 +1441,11 @@ int main(int argc, char** argv)
 
     // Important: run at least once.
     dstim_update(stim);
+
+    // Run a few frames and get the last frame presentation time BEFORE the window is destroyed.
+    dvz_app_run(stim->app, 5);
+    double time = dstim_time(stim);
+    log_info("time: %f", time);
 
     // DEBUG
     dvz_app_run(stim->app, 0);
