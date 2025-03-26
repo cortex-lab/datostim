@@ -78,11 +78,11 @@ typedef enum
 
 typedef enum
 {
-    DSTIM_BLENDING_NONE,
-    DSTIM_BLENDING_DST,
-    DSTIM_BLENDING_SRC,
-    DSTIM_BLENDING_ONE_MINUS_SRC,
-} DStimBlending;
+    DSTIM_BLEND_NONE,
+    DSTIM_BLEND_DST,
+    DSTIM_BLEND_SRC,
+    DSTIM_BLEND_ONE_MINUS_SRC,
+} DStimBlend;
 
 /*
 case {'none' ''}
@@ -166,9 +166,9 @@ DSTIM_EXPORT void dstim_layer_periodic(DStim* stim, uint32_t layer_idx, bool is_
 
 
 
-DSTIM_EXPORT void dstim_layer_blending(
+DSTIM_EXPORT void dstim_layer_blend(
     DStim* stim, uint32_t layer_idx,
-    DStimBlending blending); // per-layer blending options (there will be a few predefined options)
+    DStimBlend blend); // per-layer blend options (there will be a few predefined options)
 
 
 

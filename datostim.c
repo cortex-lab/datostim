@@ -170,7 +170,7 @@ struct DLayer
 
     DvzFormat format;
     DStimInterpolation interpolation;
-    DStimBlending blending;
+    DStimBlend blend;
 
     bool is_periodic;
     bool is_visible;       // false by default
@@ -702,7 +702,7 @@ static void set_blend(DStim* stim, uint32_t layer_idx)
 
     DvzBlendType blend = DVZ_BLEND_DISABLE;
 
-    if (layer->blending == DSTIM_BLENDING_DST)
+    if (layer->blend == DSTIM_BLEND_DST)
     {
         blend = DVZ_BLEND_DESTINATION;
     }
@@ -1146,13 +1146,13 @@ void dstim_layer_periodic(DStim* stim, uint32_t layer_idx, bool is_periodic)
 
 
 
-void dstim_layer_blending(DStim* stim, uint32_t layer_idx, DStimBlending blending)
+void dstim_layer_blend(DStim* stim, uint32_t layer_idx, DStimBlend blend)
 {
     ANN(stim);
 
     GET_LAYER
     TOUCH_LAYER
-    layer->blending = blending;
+    layer->blend = blend;
 }
 
 
@@ -1437,7 +1437,7 @@ int main(int argc, char** argv)
         FREE(rgba);
 
         // Layer parameters.
-        dstim_layer_blending(stim, 0, DSTIM_BLENDING_NONE);
+        dstim_layer_blend(stim, 0, DSTIM_BLEND_NONE);
         dstim_layer_periodic(stim, 0, false);
         dstim_layer_angle(stim, 0, 45.0);
         dstim_layer_offset(stim, 0, 0, 0);
@@ -1462,7 +1462,7 @@ int main(int argc, char** argv)
         FREE(rgba);
 
         // Layer parameters.
-        dstim_layer_blending(stim, 0, DSTIM_BLENDING_NONE);
+        dstim_layer_blend(stim, 0, DSTIM_BLEND_NONE);
         dstim_layer_mask(stim, 0, false, false, false, true);
         dstim_layer_interpolation(stim, 0, DSTIM_INTERPOLATION_LINEAR);
         dstim_layer_periodic(stim, 0, false);
@@ -1489,7 +1489,7 @@ int main(int argc, char** argv)
 
         // Layer parameters.
         dstim_layer_view(stim, 1, *view);
-        dstim_layer_blending(stim, 1, DSTIM_BLENDING_DST);
+        dstim_layer_blend(stim, 1, DSTIM_BLEND_DST);
         dstim_layer_mask(stim, 1, true, true, true, true);
         dstim_layer_interpolation(stim, 1, DSTIM_INTERPOLATION_LINEAR);
         dstim_layer_periodic(stim, 1, true);
