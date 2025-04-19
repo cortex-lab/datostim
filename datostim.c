@@ -8,6 +8,7 @@
 /*  Imports                                                                                      */
 /*************************************************************************************************/
 
+#include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -36,7 +37,8 @@
 #define DSTIM_MAX_SCREENS 8
 #define DSTIM_MAX_LAYERS  16
 
-#define DSTIM_DEFAULT_SQUARE_COLOR 0, 255, 255, 255
+#define DSTIM_DEFAULT_SQUARE_COLOR     0, 255, 255, 255
+#define DSTIM_ALTERNATIVE_SQUARE_COLOR 255, 255, 0, 255
 
 #define SQUARE_VERTEX_COUNT 6
 
@@ -1387,7 +1389,19 @@ static void _on_timer(DvzApp* app, DvzId window_id, DvzTimerEvent ev)
     dstim_keyboard(stim, &key);
 
     // Display information.
-    log_info("time: %.3f, mouse (%.0f, %.0f), button %d, keyboard %d", time, x, y, button, key);
+    // log_info("time: %.3f, mouse (%.0f, %.0f), button %d, keyboard %d", time, x, y, button, key);
+
+    double offset = -90 + 30 * fmod(ev.time, 5.0);
+    dstim_layer_offset(stim, 0, offset, 0);
+    dstim_layer_offset(stim, 1, offset, 0);
+
+    // Sync square.
+    if (ev.step_idx % 2 == 0)
+        dstim_square_color(stim, DSTIM_DEFAULT_SQUARE_COLOR);
+    else
+        dstim_square_color(stim, DSTIM_ALTERNATIVE_SQUARE_COLOR);
+
+    dstim_update(stim);
 }
 
 
@@ -1506,7 +1520,7 @@ int main(int argc, char** argv)
     dstim_update(stim);
 
     // Timer.
-    float dt = 0.5;
+    float dt = 0.05;
     dvz_app_timer(stim->app, 0, dt, 0);
     dvz_app_ontimer(stim->app, _on_timer, stim);
 

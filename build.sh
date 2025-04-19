@@ -28,5 +28,5 @@ gcc -I$DATOVIZ_FOLDER/include \
     -I$DATOVIZ_FOLDER/build/_deps/cglm-src/include/ \
     -L$DATOVIZ_FOLDER/build \
     datostim.c -o datostim \
-    -ldatoviz \
+    -lm -ldatoviz \
     -Wl,-rpath,$DATOVIZ_FOLDER/build
