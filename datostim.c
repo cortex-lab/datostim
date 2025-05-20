@@ -1370,9 +1370,9 @@ void dstim_update(DStim* stim)
 /*  Entry point                                                                                  */
 /*************************************************************************************************/
 
-static void _on_timer(DvzApp* app, DvzId window_id, DvzTimerEvent ev)
+static void _on_timer(DvzApp* app, DvzId window_id, DvzTimerEvent* ev)
 {
-    DStim* stim = (DStim*)ev.user_data;
+    DStim* stim = (DStim*)ev->user_data;
     assert(stim != NULL);
 
     // Get current time.
@@ -1391,12 +1391,12 @@ static void _on_timer(DvzApp* app, DvzId window_id, DvzTimerEvent ev)
     // Display information.
     // log_info("time: %.3f, mouse (%.0f, %.0f), button %d, keyboard %d", time, x, y, button, key);
 
-    double offset = -90 + 30 * fmod(ev.time, 5.0);
+    double offset = -90 + 30 * fmod(ev->time, 5.0);
     dstim_layer_offset(stim, 0, offset, 0);
     dstim_layer_offset(stim, 1, offset, 0);
 
     // Sync square.
-    if (ev.step_idx % 2 == 0)
+    if (ev->step_idx % 2 == 0)
         dstim_square_color(stim, DSTIM_DEFAULT_SQUARE_COLOR);
     else
         dstim_square_color(stim, DSTIM_ALTERNATIVE_SQUARE_COLOR);
@@ -1522,7 +1522,7 @@ int main(int argc, char** argv)
     // Timer.
     float dt = 0.05;
     dvz_app_timer(stim->app, 0, dt, 0);
-    dvz_app_ontimer(stim->app, _on_timer, stim);
+    dvz_app_on_timer(stim->app, _on_timer, stim);
 
     // DEBUG
     dvz_app_run(stim->app, 0);
